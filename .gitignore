@@ -1,16 +1,8 @@
-﻿# Python / env
-.venv/
+﻿.venv/
 __pycache__/
-
-# Build artifacts
 build/
 dist/
 *.spec
-
-# IDE
 .vs/
 .vscode/
-
-# Misc
-_archive/
 *.exe
