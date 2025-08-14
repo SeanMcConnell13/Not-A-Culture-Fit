@@ -2,42 +2,39 @@
 # -*- coding: utf-8 -*-
 """
 Not a Culture Fit — Polished GUI (Tkinter) with Sprite — Ollama-powered
-
-Run (dev):
-  pip install -r requirements.txt
-  python src/nacf_ui_polished.py
-
-Notes:
-- Uses Tkinter + ttk with a clean chat layout, left panel card with sprite.
-- Color palette derives from the sprite (charcoal, forest, leather brown, light gray).
-- No packaging yet; later we can add a PyInstaller spec that bundles assets.
+First-run bootstrap will install/start Ollama and pull the model if needed.
 """
+
 from __future__ import annotations
-import os
-import random
-import threading
+import os, sys, random, threading, time, subprocess, shutil, webbrowser, textwrap
 import tkinter as tk
-from tkinter import ttk
-from tkinter import scrolledtext
-from tkinter import messagebox
-import textwrap
+from tkinter import ttk, scrolledtext, messagebox
 from typing import List, Dict, Any
 
 import requests  # pip install requests
-from PIL import Image, ImageTk  # pip install Pillow
+# Pillow (sprite). If missing in dev, app still runs without the image.
+try:
+    from PIL import Image, ImageTk  # pip install Pillow
+except Exception:
+    Image = ImageTk = None
+
+# -------- Resource paths (dev + PyInstaller onefile) --------
+def resource_path(*parts):
+    base = getattr(sys, "_MEIPASS", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    return os.path.join(base, *parts)
 
 # ---------- Config ----------
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 MODEL_NAME = os.environ.get("NACF_MODEL", "llama3")
 NUM_QUESTIONS_PER_INTERVIEW = 10
 
-# ---------- Palette (from sprite) ----------
-CHARCOAL = "#2f3b4a"   # frame bars, headings
-FOREST   = "#2f5f3a"   # accents (buttons focus/active)
-LEATHER  = "#a06b2a"   # subtle secondary
-CANVAS   = "#f5f7fa"   # app background
-CARD_BG  = "#ffffff"   # panels
-INK      = "#1e2329"   # text
+# ---------- Palette ----------
+CHARCOAL = "#2f3b4a"
+FOREST   = "#2f5f3a"
+LEATHER  = "#a06b2a"
+CANVAS   = "#f5f7fa"
+CARD_BG  = "#ffffff"
+INK      = "#1e2329"
 MUTED    = "#6b7785"
 
 # ---------- Data ----------
@@ -53,18 +50,15 @@ NOUNS = [
     "Onboarding","KPIs","Clickthroughs","Entanglement","Arbitrage",
     "Synergies","Wrangling","Migrations","Intelligence","Silos"
 ]
-SUFFIXES = ["LLC","& Sons","Group","Ltd.","PLC","AG","S.A.","LLP",
-            "Holdings","Worldwide","International","Global","Capital"]
+SUFFIXES = ["LLC","& Sons","Group","Ltd.","PLC","AG","S.A.","LLP","Holdings","Worldwide","International","Global","Capital"]
 MANAGER_FIRST = [
-    "Gristle","Nebula","Chadwick","Velvet","Cabbage","Stark","Peony",
-    "Vortex","Crispin","Zamboni","Tarragon","Gloria-7","Kevlar",
-    "Juniper","Tungsten","Paprika","Mirth","Drizzle","Quantum","Burlap"
+    "Gristle","Nebula","Chadwick","Velvet","Cabbage","Stark","Peony","Vortex","Crispin","Zamboni",
+    "Tarragon","Gloria-7","Kevlar","Juniper","Tungsten","Paprika","Mirth","Drizzle","Quantum","Burlap"
 ]
 MANAGER_LAST = [
-    "Mcdagger","FOMO","Von Spreadsheet","Gallowglass","Afterparty",
-    "Hardskill","Dumpster","Blunderbuss","KPIson","Debtforge",
-    "Coldbrew","Synergywolf","Carbonara","Quarterclose","Powerpoint",
-    "Benchmarker","BrassTax","Hedgefund","Moonshot","Stakeholder"
+    "Mcdagger","FOMO","Von Spreadsheet","Gallowglass","Afterparty","Hardskill","Dumpster","Blunderbuss",
+    "KPIson","Debtforge","Coldbrew","Synergywolf","Carbonara","Quarterclose","Powerpoint","Benchmarker",
+    "BrassTax","Hedgefund","Moonshot","Stakeholder"
 ]
 REJECTION_REASONS = [
     "We chose a candidate with more hands-on experience in interpretive dance-based standups.",
@@ -146,7 +140,7 @@ QUESTION_BANK: List[str] = [
     "Walk me through your incident response for vibes being off.",
     "Suggest a reorg that increases morale for exactly 11 minutes.",
     "When should we pivot to selling hoodies?",
-    "Design a security policy for the office microwave.",
+    "Design a security policy for the office microwave?",
     "Write a 1-line regex that ruins your week.",
     "How would you compress a scream to fit in a status update?",
     "Draft a memo convincing us to adopt tabs ironically.",
@@ -201,6 +195,96 @@ if len(QUESTION_BANK) < 100:
     base = "Give an unreasonably detailed answer to: why meetings breed more meetings?"
     QUESTION_BANK.extend([f"{base} (variant {i+1})" for i in range(100 - len(QUESTION_BANK))])
 
+# ---------- Ollama bootstrap (Option A) ----------
+def ensure_ollama(url: str, model: str = "llama3", parent: tk.Tk | None = None) -> bool:
+    """Ensure Ollama is installed, reachable, and the model is present."""
+    # 1) Is the server up?
+    server_ok = False
+    try:
+        requests.get(f"{url}/api/tags", timeout=2)
+        server_ok = True
+    except Exception:
+        pass
+
+    # 2) If CLI missing, offer to install via winget
+    if not server_ok and shutil.which("ollama") is None:
+        ans = messagebox.askyesno(
+            "Ollama not found",
+            "This app uses Ollama (local LLM runtime).\n\nInstall it now via winget? (Requires admin)",
+            parent=parent,
+        )
+        if ans:
+            cmd = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "Start-Process", "winget",
+                "-ArgumentList", '"install -e --id Ollama.Ollama --silent"',
+                "-Verb", "RunAs"
+            ]
+            try:
+                subprocess.run(" ".join(cmd), shell=True, check=True)
+                messagebox.showinfo("Ollama installed", "Ollama was installed. Starting service…", parent=parent)
+            except Exception as e:
+                messagebox.showerror("Install failed", f"Could not install Ollama:\n{e}", parent=parent)
+                return False
+        else:
+            messagebox.showinfo("Installation required",
+                                "Please install Ollama and relaunch.\nhttps://ollama.com/download",
+                                parent=parent)
+            try: webbrowser.open("https://ollama.com/download")
+            except Exception: pass
+            return False
+
+    # 3) Try to start the Windows service (ignore errors)
+    try:
+        subprocess.run(["sc", "start", "Ollama"], check=False, capture_output=True)
+    except Exception:
+        pass
+
+    # 4) Wait for server to be reachable (try foreground serve as fallback)
+    for _ in range(30):  # ~15s
+        try:
+            requests.get(f"{url}/api/tags", timeout=1.5)
+            server_ok = True
+            break
+        except Exception:
+            time.sleep(0.5)
+
+    if not server_ok:
+        try:
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        for _ in range(40):  # ~20s
+            try:
+                requests.get(f"{url}/api/tags", timeout=1.5)
+                server_ok = True
+                break
+            except Exception:
+                time.sleep(0.5)
+
+    if not server_ok:
+        messagebox.showerror("Ollama unavailable", f"Could not reach Ollama at {url}.\nStart Ollama and try again.", parent=parent)
+        return False
+
+    # 5) Ensure the model exists (pull on first run)
+    try:
+        r = requests.get(f"{url}/api/tags", timeout=5).json()
+        have = {m.get("name", "").split(":")[0] for m in r.get("models", [])}
+        need = model.split(":")[0]
+        if need not in have:
+            if messagebox.askyesno("Download model", f"Download '{model}' now? (one-time)", parent=parent):
+                subprocess.run(["cmd", "/c", f'ollama pull "{model}"'], check=True)
+            else:
+                return False
+    except Exception:
+        try:
+            subprocess.run(["cmd", "/c", f'ollama pull "{model}"'], check=True)
+        except Exception:
+            messagebox.showerror("Model missing", f"Could not confirm or download model '{model}'.", parent=parent)
+            return False
+
+    return True
+
 # ---------- Helpers ----------
 def gen_company_name() -> str:
     return random.choice([
@@ -243,6 +327,10 @@ def ollama_generate(prompt: str, *, model: str, url: str) -> str:
 class NACFApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        try:
+            self.iconbitmap(resource_path("assets", "NotACultureFit.ico"))
+        except Exception:
+            pass
         self.title("Not a Culture Fit — Absurd Interviewer")
         self.geometry("980x720")
         self.configure(bg=CANVAS)
@@ -265,9 +353,7 @@ class NACFApp(tk.Tk):
         style.configure("Header.TFrame", background=CHARCOAL)
         style.configure("Header.TLabel", background=CHARCOAL, foreground="#ffffff", font=("Segoe UI", 12, "bold"))
         style.configure("TButton", padding=6)
-        style.map("TButton",
-                  background=[("active", FOREST)],
-                  foreground=[("active", "#ffffff")])
+        style.map("TButton", background=[("active", FOREST)], foreground=[("active", "#ffffff")])
 
         # Header
         header = ttk.Frame(self, style="Header.TFrame")
@@ -283,146 +369,109 @@ class NACFApp(tk.Tk):
         ttk.Entry(right, textvariable=self.url_var, width=24).pack(side="left", padx=(0,10))
         ttk.Button(right, text="New Interview", command=self.new_interview).pack(side="left")
 
-        # Body: left panel (sprite card) + chat card
-        body = ttk.Frame(self, style="Card.TFrame")
-        body.pack(fill="both", expand=True, padx=12, pady=12)
+        # Body: left (sprite card) + right (chat)
+        body = ttk.Frame(self, style="Card.TFrame"); body.pack(fill="both", expand=True, padx=12, pady=12)
+        self.left = ttk.Frame(body, style="Card.TFrame");  self.left.pack(side="left", fill="y", padx=10, pady=10)
+        self.right = ttk.Frame(body, style="Card.TFrame"); self.right.pack(side="left", fill="both", expand=True, padx=(0,10), pady=10)
 
-        self.left = ttk.Frame(body, style="Card.TFrame")
-        self.left.pack(side="left", fill="y", padx=10, pady=10)
         self._build_left_card(self.left)
-
-        self.right = ttk.Frame(body, style="Card.TFrame")
-        self.right.pack(side="left", fill="both", expand=True, padx=(0,10), pady=10)
         self._build_chat_card(self.right)
-
         self._set_welcome()
 
-    # Left card with sprite and details
+    # Left card with sprite + details
     def _build_left_card(self, parent):
-        # load sprite
-        sprite_path = os.path.join(os.path.dirname(__file__), "..", "assets", "manager_sprite.png")
-        try:
-            img = Image.open(sprite_path)
-            # scale to fit nicely (~220px tall) using NEAREST for pixel crispness
-            h_target = 220
-            scale = h_target / img.height
-            w = int(img.width * scale)
-            h = int(img.height * scale)
-            img = img.resize((w, h), Image.NEAREST)
-            self.sprite = ImageTk.PhotoImage(img)
-        except Exception as e:
-            self.sprite = None
-
         frame = ttk.Frame(parent, style="Card.TFrame")
         frame.pack(fill="y", padx=8, pady=8)
         ttk.Label(frame, text="Hiring Manager", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=12, pady=(12,4))
+
+        self.sprite = None
+        if Image and ImageTk:
+            try:
+                spath = resource_path("assets", "manager_sprite.png")
+                img = Image.open(spath)
+                h_target = 220
+                scale = h_target / img.height
+                img = img.resize((int(img.width * scale), int(img.height * scale)), Image.NEAREST)
+                self.sprite = ImageTk.PhotoImage(img)
+            except Exception:
+                self.sprite = None
+
         if self.sprite:
-            lbl = ttk.Label(frame, image=self.sprite)
-            lbl.image = self.sprite
+            lbl = ttk.Label(frame, image=self.sprite); lbl.image = self.sprite
             lbl.pack(padx=12, pady=(4,8))
-        self.name_label = ttk.Label(frame, text="—", font=("Segoe UI", 11))
-        self.name_label.pack(anchor="w", padx=12, pady=(4,8))
+
+        self.name_label = ttk.Label(frame, text="—", font=("Segoe UI", 11)); self.name_label.pack(anchor="w", padx=12, pady=(4,8))
         ttk.Separator(frame, orient="horizontal").pack(fill="x", padx=12, pady=8)
         ttk.Label(frame, text="Company", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=12)
-        self.company_label = ttk.Label(frame, text="—")
-        self.company_label.pack(anchor="w", padx=12, pady=(2,12))
+        self.company_label = ttk.Label(frame, text="—"); self.company_label.pack(anchor="w", padx=12, pady=(2,12))
         ttk.Label(frame, text="Status", font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=12)
-        self.status_label = ttk.Label(frame, text="Waiting to start…", foreground=MUTED)
-        self.status_label.pack(anchor="w", padx=12, pady=(2,12))
+        self.status_label = ttk.Label(frame, text="Waiting to start…", foreground=MUTED); self.status_label.pack(anchor="w", padx=12, pady=(2,12))
 
-    # Chat card (chat area + input box)
+    # Chat card
     def _build_chat_card(self, parent):
-        top = ttk.Frame(parent, style="Card.TFrame")
-        top.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # progress
+        top = ttk.Frame(parent, style="Card.TFrame"); top.pack(fill="both", expand=True, padx=8, pady=8)
         self.progress_var = tk.StringVar(value="0/10")
-        self.progress = ttk.Progressbar(top, maximum=NUM_QUESTIONS_PER_INTERVIEW, value=0)
-        self.progress.pack(fill="x", padx=10, pady=(10,6))
-        self.progress_label = ttk.Label(top, textvariable=self.progress_var)
-        self.progress_label.pack(anchor="e", padx=12, pady=(0,4))
-
-        # chat area
-        self.chat = scrolledtext.ScrolledText(top, wrap="word", height=20, bg=CARD_BG, relief="flat")
-        self.chat.pack(fill="both", expand=True, padx=10, pady=6)
+        self.progress = ttk.Progressbar(top, maximum=NUM_QUESTIONS_PER_INTERVIEW, value=0); self.progress.pack(fill="x", padx=10, pady=(10,6))
+        self.progress_label = ttk.Label(top, textvariable=self.progress_var); self.progress_label.pack(anchor="e", padx=12, pady=(0,4))
+        self.chat = scrolledtext.ScrolledText(top, wrap="word", height=20, bg=CARD_BG, relief="flat"); self.chat.pack(fill="both", expand=True, padx=10, pady=6)
         self.chat.configure(state="disabled")
-        # tags
         self.chat.tag_configure("system", foreground=MUTED, spacing1=4, spacing3=6, lmargin1=4, lmargin2=4)
         self.chat.tag_configure("manager", foreground=INK, spacing1=6, spacing3=8, lmargin1=4, lmargin2=4, background="#eef3f6")
         self.chat.tag_configure("user", foreground=INK, spacing1=6, spacing3=8, lmargin1=40, lmargin2=40, background="#fff7e8")
-
-        # input row
-        row = ttk.Frame(top)
-        row.pack(fill="x", padx=10, pady=(6,10))
-        self.entry = tk.Text(row, height=3, wrap="word")
-        self.entry.pack(side="left", fill="x", expand=True)
-        self.entry.bind("<Return>", self._on_enter)
-        self.entry.bind("<Shift-Return>", lambda e: None)
+        row = ttk.Frame(top); row.pack(fill="x", padx=10, pady=(6,10))
+        self.entry = tk.Text(row, height=3, wrap="word"); self.entry.pack(side="left", fill="x", expand=True)
+        self.entry.bind("<Return>", self._on_enter); self.entry.bind("<Shift-Return>", lambda e: None)
         ttk.Button(row, text="Send ▶", command=self.send_current).pack(side="left", padx=(8,0))
 
     def _set_welcome(self):
-        self.company = gen_company_name()
-        self.manager = gen_manager_name()
-        self.name_label.config(text=self.manager)
-        self.company_label.config(text=self.company)
+        self.company = gen_company_name(); self.manager = gen_manager_name()
+        self.name_label.config(text=self.manager); self.company_label.config(text=self.company)
         self.status_label.config(text="Ready")
         self._chat_system(f"Welcome to Not a Culture Fit.\nModel: {self.model}  •  Server: {self.url}")
         self._chat_manager(f"Thank you for your time today. You’re being considered for a position at {self.company}. I’m the Hiring Manager, {self.manager}. Click 'New Interview' when ready.")
 
     def new_interview(self):
         self.model = (self.model_var.get().strip() or "llama3")
-        self.url = (self.url_var.get().strip() or "http://localhost:11434")
-        self.company = gen_company_name()
-        self.manager = gen_manager_name()
-        self.name_label.config(text=self.manager)
-        self.company_label.config(text=self.company)
+        self.url   = (self.url_var.get().strip() or "http://localhost:11434")
+
+        # Ensure Ollama is ready for the chosen URL/model
+        if not ensure_ollama(self.url, self.model, parent=self):
+            return
+
+        self.company = gen_company_name(); self.manager = gen_manager_name()
+        self.name_label.config(text=self.manager); self.company_label.config(text=self.company)
         self.questions = random.sample(QUESTION_BANK, NUM_QUESTIONS_PER_INTERVIEW)
-        self.idx = 0
-        self.progress["value"] = 0
-        self.progress_var.set(f"0/{NUM_QUESTIONS_PER_INTERVIEW}")
+        self.idx = 0; self.progress["value"] = 0; self.progress_var.set(f"0/{NUM_QUESTIONS_PER_INTERVIEW}")
         self.chat.configure(state="normal"); self.chat.delete("1.0","end"); self.chat.configure(state="disabled")
         self._chat_manager(f"Welcome back. Fresh requisition from {self.company}. I’m {self.manager}. Let's begin.")
         self._ask_next_question()
 
     # Chat helpers
     def _chat_insert(self, text: str, tag: str):
-        self.chat.configure(state="normal")
-        self.chat.insert("end", text + "\n", (tag,))
-        self.chat.see("end")
-        self.chat.configure(state="disabled")
+        self.chat.configure(state="normal"); self.chat.insert("end", text + "\n", (tag,)); self.chat.see("end"); self.chat.configure(state="disabled")
 
-    def _chat_system(self, text: str):
-        self._chat_insert(text, "system")
-
-    def _chat_manager(self, text: str):
-        self._chat_insert("🧑‍💼 " + text, "manager")
-
-    def _chat_user(self, text: str):
-        self._chat_insert("🙋 " + text, "user")
+    def _chat_system(self, text: str):  self._chat_insert(text, "system")
+    def _chat_manager(self, text: str): self._chat_insert("🧑‍💼 " + text, "manager")
+    def _chat_user(self, text: str):    self._chat_insert("🙋 " + text, "user")
 
     # Q&A flow
     def _ask_next_question(self):
         if self.idx >= NUM_QUESTIONS_PER_INTERVIEW:
-            self._decision()
-            return
+            self._decision(); return
         q = self.questions[self.idx]
         self._chat_manager(f"Q{self.idx+1}: {q}")
         self.status_label.config(text=f"Awaiting answer to Q{self.idx+1}")
         self.entry.focus_set()
 
     def _on_enter(self, event):
-        # Shift+Enter for newline, plain Enter sends
-        if event.state & 0x0001:  # Shift
+        if event.state & 0x0001:  # Shift => newline
             return
-        self.send_current()
-        return "break"
+        self.send_current(); return "break"
 
     def send_current(self):
         user_ans = self.entry.get("1.0","end").strip()
-        if not user_ans:
-            return
-        self.entry.delete("1.0","end")
-        self._chat_user(user_ans)
+        if not user_ans: return
+        self.entry.delete("1.0","end"); self._chat_user(user_ans)
         self.status_label.config(text="Scoring answer…")
         prompt = build_critique_prompt(self.company, self.manager, self.questions[self.idx], user_ans)
 
@@ -432,20 +481,14 @@ class NACFApp(tk.Tk):
             except Exception as e:
                 critique = f"[Ollama error: {e}]"
             self.after(0, lambda: self._handle_critique(critique))
-
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_critique(self, critique: str):
-        if not critique:
-            critique = "I’ve seen stronger convictions in a lukewarm decaf. Next."
+        if not critique: critique = "I’ve seen stronger convictions in a lukewarm decaf. Next."
         self._chat_manager(critique)
-        self.idx += 1
-        self.progress["value"] = self.idx
-        self.progress_var.set(f"{self.idx}/{NUM_QUESTIONS_PER_INTERVIEW}")
-        if self.idx < NUM_QUESTIONS_PER_INTERVIEW:
-            self._ask_next_question()
-        else:
-            self._decision()
+        self.idx += 1; self.progress["value"] = self.idx; self.progress_var.set(f"{self.idx}/{NUM_QUESTIONS_PER_INTERVIEW}")
+        if self.idx < NUM_QUESTIONS_PER_INTERVIEW: self._ask_next_question()
+        else: self._decision()
 
     def _decision(self):
         self.status_label.config(text="Final decision rendered.")
@@ -453,6 +496,13 @@ class NACFApp(tk.Tk):
         self._chat_system("Interview again? Use the 'New Interview' button in the header.")
 
 def main():
+    # Hidden root so messageboxes can show during preflight
+    temp_root = tk.Tk(); temp_root.withdraw()
+    ok = ensure_ollama(OLLAMA_URL, MODEL_NAME, parent=temp_root)
+    try: temp_root.destroy()
+    except Exception: pass
+    if not ok: return
+
     app = NACFApp()
     app.mainloop()
 

@@ -1,31 +1,16 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.pdb
-*.pkl
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.cache/
-
-# Environments
+﻿# Python / env
 .venv/
-env/
-venv/
-ENV/
+__pycache__/
 
 # Build artifacts
 build/
 dist/
 *.spec
 
-# IDEs
-.vscode/
-.idea/
+# IDE
 .vs/
+.vscode/
 
-# OS
-.DS_Store
-Thumbs.db
+# Misc
+_archive/
+*.exe
